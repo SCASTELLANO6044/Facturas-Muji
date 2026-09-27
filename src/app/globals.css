@@ -307,6 +307,11 @@ h2 {
 .input-error {
   color: var(--danger);
 }
+.skip-feedback {
+  font-size: 11px;
+  color: var(--primary);
+  margin-top: 6px;
+}
 .number-label {
   display: flex;
   justify-content: space-between;

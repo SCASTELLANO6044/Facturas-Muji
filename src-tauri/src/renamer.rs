@@ -29,6 +29,8 @@ pub struct Preview {
     pub folder: String,
     pub rows: Vec<RenameRow>,
     pub skipped: usize,
+    pub first_number: u32,
+    pub last_number: u32,
 }
 
 pub struct Plan {
@@ -71,7 +73,12 @@ pub fn scan(directory: &Path) -> Result<(Vec<FileStamp>, usize), String> {
     Ok((files, skipped))
 }
 
-pub fn make_plan(folder: &str, prefix: &str, start: u32) -> Result<Plan, String> {
+pub fn make_plan(
+    folder: &str,
+    prefix: &str,
+    start: u32,
+    skip_numbers: &[u32],
+) -> Result<Plan, String> {
     let prefix = prefix.trim();
     if prefix.is_empty()
         || prefix
@@ -87,6 +94,10 @@ pub fn make_plan(folder: &str, prefix: &str, start: u32) -> Result<Plan, String>
     if start > 99_999 {
         return Err("The starting number must be between 00000 and 99999.".into());
     }
+    if skip_numbers.len() > 100_000 || skip_numbers.iter().any(|n| *n > 99_999) {
+        return Err("Skipped numbers must be between 00000 and 99999.".into());
+    }
+    let excluded: HashSet<u32> = skip_numbers.iter().copied().collect();
     let directory = fs::canonicalize(folder).map_err(|e| error("Could not open this folder", e))?;
     let (snapshot, skipped) = scan(&directory)?;
     if snapshot.is_empty() {
@@ -98,12 +109,26 @@ pub fn make_plan(folder: &str, prefix: &str, start: u32) -> Result<Plan, String>
         return Err("This batch would exceed 99999. Choose a lower starting number.".into());
     }
     let mut rows = Vec::new();
-    for (index, file) in snapshot.iter().enumerate() {
+    let mut next_number = start;
+    let mut first_number = start;
+    let mut last_number = start;
+    for file in &snapshot {
+        while next_number <= 99_999 && excluded.contains(&next_number) {
+            next_number += 1;
+        }
+        if next_number > 99_999 {
+            return Err("Not enough numbers remain before 99999 after skipping. Choose a lower starting number or remove some skipped numbers.".into());
+        }
+        if rows.is_empty() {
+            first_number = next_number;
+        }
+        last_number = next_number;
         let extension = Path::new(&file.name)
             .extension()
             .and_then(|s| s.to_str())
             .filter(|s| !s.is_empty());
-        let mut renamed = format!("{prefix} {:05}", start + index as u32);
+        let mut renamed = format!("{prefix} {next_number:05}");
+        next_number += 1;
         if let Some(extension) = extension {
             renamed.push('.');
             renamed.push_str(extension);
@@ -124,6 +149,8 @@ pub fn make_plan(folder: &str, prefix: &str, start: u32) -> Result<Plan, String>
             folder: folder.into(),
             rows,
             skipped,
+            first_number,
+            last_number,
         },
         directory,
         snapshot,
@@ -286,6 +313,8 @@ pub fn reverse_plan(plan: &Plan) -> Result<Plan, String> {
             id: Uuid::new_v4().to_string(),
             folder: plan.preview.folder.clone(),
             skipped: plan.preview.skipped,
+            first_number: plan.preview.first_number,
+            last_number: plan.preview.last_number,
             rows: plan
                 .preview
                 .rows
@@ -312,7 +341,13 @@ mod tests {
         fs::write(dir.path().join("invoice2.pdf"), b"two").unwrap();
         fs::write(dir.path().join("invoice1"), b"one").unwrap();
         fs::create_dir(dir.path().join("archive")).unwrap();
-        let plan = make_plan(dir.path().to_str().unwrap(), "2026 06 22 FRA EMITIDA", 140).unwrap();
+        let plan = make_plan(
+            dir.path().to_str().unwrap(),
+            "2026 06 22 FRA EMITIDA",
+            140,
+            &[],
+        )
+        .unwrap();
         assert_eq!(plan.preview.skipped, 1);
         assert_eq!(plan.preview.rows[0].original, "invoice1");
         assert_eq!(
@@ -333,7 +368,7 @@ mod tests {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("A 00001.pdf"), b"first").unwrap();
         fs::write(dir.path().join("A 00002.pdf"), b"second").unwrap();
-        let plan = make_plan(dir.path().to_str().unwrap(), "A", 2).unwrap();
+        let plan = make_plan(dir.path().to_str().unwrap(), "A", 2, &[]).unwrap();
         execute(&plan).unwrap();
         assert_eq!(fs::read(dir.path().join("A 00002.pdf")).unwrap(), b"first");
         assert_eq!(fs::read(dir.path().join("A 00003.pdf")).unwrap(), b"second");
@@ -344,10 +379,10 @@ mod tests {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("one.pdf"), b"1").unwrap();
         fs::write(dir.path().join("two.pdf"), b"2").unwrap();
-        assert!(make_plan(dir.path().to_str().unwrap(), "A", 99999).is_err());
-        assert!(make_plan(dir.path().to_str().unwrap(), "../escape", 1).is_err());
+        assert!(make_plan(dir.path().to_str().unwrap(), "A", 99999, &[]).is_err());
+        assert!(make_plan(dir.path().to_str().unwrap(), "../escape", 1, &[]).is_err());
         fs::create_dir(dir.path().join("A 00001.pdf")).unwrap();
-        assert!(make_plan(dir.path().to_str().unwrap(), "A", 1).is_err());
+        assert!(make_plan(dir.path().to_str().unwrap(), "A", 1, &[]).is_err());
         assert!(dir.path().join("one.pdf").exists());
     }
 
@@ -355,7 +390,7 @@ mod tests {
     fn stale_preview_and_undo_refuse_changed_folder() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("one.txt"), b"original").unwrap();
-        let plan = make_plan(dir.path().to_str().unwrap(), "A", 0).unwrap();
+        let plan = make_plan(dir.path().to_str().unwrap(), "A", 0, &[]).unwrap();
         fs::write(dir.path().join("added.txt"), b"new").unwrap();
         assert!(execute(&plan).is_err());
         fs::remove_file(dir.path().join("added.txt")).unwrap();
@@ -381,7 +416,7 @@ mod tests {
     fn unchanged_batch_is_a_noop() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("A 00140.pdf"), b"same").unwrap();
-        let plan = make_plan(dir.path().to_str().unwrap(), "A", 140).unwrap();
+        let plan = make_plan(dir.path().to_str().unwrap(), "A", 140, &[]).unwrap();
         assert_eq!(execute(&plan).unwrap(), 0);
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
@@ -393,7 +428,7 @@ mod tests {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("a.pdf"), b"first").unwrap();
         fs::write(dir.path().join("b.pdf"), b"second").unwrap();
-        let plan = make_plan(dir.path().to_str().unwrap(), "Invoice", 140).unwrap();
+        let plan = make_plan(dir.path().to_str().unwrap(), "Invoice", 140, &[]).unwrap();
         let locked = fs::OpenOptions::new()
             .read(true)
             .share_mode(1)
@@ -413,10 +448,68 @@ mod tests {
     #[test]
     fn last_valid_number_and_empty_folder() {
         let dir = tempdir().unwrap();
-        assert!(make_plan(dir.path().to_str().unwrap(), "Invoice", 140).is_err());
+        assert!(make_plan(dir.path().to_str().unwrap(), "Invoice", 140, &[]).is_err());
         fs::write(dir.path().join("only.pdf"), b"last").unwrap();
-        let plan = make_plan(dir.path().to_str().unwrap(), "Invoice", 99999).unwrap();
+        let plan = make_plan(dir.path().to_str().unwrap(), "Invoice", 99999, &[]).unwrap();
         execute(&plan).unwrap();
         assert!(dir.path().join("Invoice 99999.pdf").exists());
+    }
+
+    #[test]
+    fn skipped_numbers_change_the_actual_rename_and_undo() {
+        let dir = tempdir().unwrap();
+        for (name, content) in [("a.pdf", "a"), ("b.pdf", "b"), ("c.PDF", "c")] {
+            fs::write(dir.path().join(name), content).unwrap();
+        }
+        let plan = make_plan(
+            dir.path().to_str().unwrap(),
+            "Invoice",
+            140,
+            &[143, 140, 140, 142, 1, 900],
+        )
+        .unwrap();
+        let names: Vec<_> = plan
+            .preview
+            .rows
+            .iter()
+            .map(|r| r.renamed.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "Invoice 00141.pdf",
+                "Invoice 00144.pdf",
+                "Invoice 00145.PDF"
+            ]
+        );
+        assert_eq!(
+            (plan.preview.first_number, plan.preview.last_number),
+            (141, 145)
+        );
+        execute(&plan).unwrap();
+        assert_eq!(
+            fs::read(dir.path().join("Invoice 00144.pdf")).unwrap(),
+            b"b"
+        );
+        assert!(!dir.path().join("Invoice 00142.pdf").exists());
+        execute(&reverse_plan(&plan).unwrap()).unwrap();
+        assert_eq!(fs::read(dir.path().join("a.pdf")).unwrap(), b"a");
+        assert_eq!(fs::read(dir.path().join("c.PDF")).unwrap(), b"c");
+    }
+
+    #[test]
+    fn skipped_numbers_cannot_overflow_or_be_out_of_range() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a.pdf"), "a").unwrap();
+        let folder = dir.path().to_str().unwrap();
+        assert!(make_plan(folder, "Invoice", 99999, &[99999]).is_err());
+        assert!(make_plan(folder, "Invoice", 0, &[100000]).is_err());
+        let all: Vec<u32> = (0..100000).collect();
+        assert!(make_plan(folder, "Invoice", 0, &all).is_err());
+        let plan = make_plan(folder, "Invoice", 99998, &[99998]).unwrap();
+        assert_eq!(plan.preview.rows[0].renamed, "Invoice 99999.pdf");
+        fs::write(dir.path().join("b.pdf"), "b").unwrap();
+        assert!(make_plan(folder, "Invoice", 99998, &[99998]).is_err());
+        assert_eq!(fs::read(dir.path().join("a.pdf")).unwrap(), b"a");
     }
 }

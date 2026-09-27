@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { firstAvailableNumber, parseSkipNumbers } from "@/lib/skip-numbers";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
@@ -22,7 +23,14 @@ import {
 } from "lucide-react";
 
 type Row = { original: string; renamed: string; size: number };
-type Preview = { id: string; folder: string; rows: Row[]; skipped: number };
+type Preview = {
+  id: string;
+  folder: string;
+  rows: Row[];
+  skipped: number;
+  firstNumber: number;
+  lastNumber: number;
+};
 type Outcome = { count: number; canUndo: boolean; warning: string | null };
 const DEFAULT_PREFIX = "2026 06 22 FRA EMITIDA";
 const PAGE_SIZE = 50;
@@ -38,6 +46,8 @@ export default function Renamer() {
   const [folder, setFolder] = useState("");
   const [prefix, setPrefix] = useState(DEFAULT_PREFIX);
   const [start, setStart] = useState("00140");
+  const [skipNumbers, setSkipNumbers] = useState("");
+  const skip = useMemo(() => parseSkipNumbers(skipNumbers), [skipNumbers]);
   const [ready, setReady] = useState(false);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [previewKey, setPreviewKey] = useState("");
@@ -50,7 +60,7 @@ export default function Renamer() {
   const [refresh, setRefresh] = useState(0);
   const [page, setPage] = useState(0);
   const generation = useRef(0);
-  const key = JSON.stringify([folder, prefix, start, refresh]);
+  const key = JSON.stringify([folder, prefix, start, skipNumbers, refresh]);
   const validStart = /^\d{1,5}$/.test(start);
   const validPrefix =
     prefix.trim().length > 0 &&
@@ -63,6 +73,12 @@ export default function Renamer() {
     current?.rows.filter((row) => row.original !== row.renamed).length ?? 0;
   const locked = busy !== null;
   const startNumber = validStart ? Number(start) : 0;
+  const firstNumber = firstAvailableNumber(startNumber, skip.numbers);
+  const skipError =
+    skip.error ||
+    (validStart && firstNumber === null
+      ? "No available numbers remain from this starting number. Remove some skipped numbers."
+      : "");
 
   useEffect(() => {
     try {
@@ -76,6 +92,8 @@ export default function Renamer() {
       ) {
         setPrefix(saved.prefix);
         setStart(saved.start);
+        if (typeof saved.skipNumbers === "string")
+          setSkipNumbers(saved.skipNumbers);
       }
     } catch {
       /* Settings are optional; defaults remain usable. */
@@ -88,16 +106,16 @@ export default function Renamer() {
     try {
       localStorage.setItem(
         "facturas-muji-settings",
-        JSON.stringify({ prefix, start }),
+        JSON.stringify({ prefix, start, skipNumbers }),
       );
     } catch {
       /* A blocked web store does not prevent renaming. */
     }
-  }, [prefix, start, ready]);
+  }, [prefix, start, skipNumbers, ready]);
 
   useEffect(() => {
     const request = ++generation.current;
-    if (!folder || !validStart || !validPrefix || done) {
+    if (!folder || !validStart || !validPrefix || skipError || done) {
       setLoading(false);
       return;
     }
@@ -110,6 +128,7 @@ export default function Renamer() {
           folder,
           prefix: prefix.trim(),
           start: Number(start),
+          skipNumbers: skip.numbers,
         });
         if (request === generation.current) {
           setPreview(result);
@@ -128,7 +147,17 @@ export default function Renamer() {
       clearTimeout(timer);
       generation.current++;
     };
-  }, [folder, prefix, start, key, validStart, validPrefix, done]);
+  }, [
+    folder,
+    prefix,
+    start,
+    key,
+    validStart,
+    validPrefix,
+    skipError,
+    skip.numbers,
+    done,
+  ]);
 
   function edited() {
     setMessage("");
@@ -350,12 +379,46 @@ export default function Renamer() {
                   ? "Leading zeros are added automatically."
                   : "Enter a number from 00000 to 99999."}
               </p>
+              <div className="number-label">
+                <label htmlFor="skip-numbers">Skip numbers</label>
+                <span>Optional</span>
+              </div>
+              <input
+                id="skip-numbers"
+                placeholder="e.g. 142, 145-148"
+                value={skipNumbers}
+                onChange={(e) => {
+                  edited();
+                  setSkipNumbers(e.target.value);
+                }}
+                disabled={locked}
+                maxLength={10000}
+                spellCheck={false}
+                aria-invalid={Boolean(skipError)}
+                aria-describedby="skip-hint skip-feedback"
+              />
+              <p className="input-hint" id="skip-hint">
+                Already used a number? Leave it out of the count. Separate
+                numbers or ranges with commas.
+              </p>
+              <p
+                className={skipError ? "input-error" : "skip-feedback"}
+                id="skip-feedback"
+                aria-live="polite"
+              >
+                {skipError ||
+                  (skip.numbers.length
+                    ? `${skip.numbers.length} ${skip.numbers.length === 1 ? "number" : "numbers"} excluded · saved for next time`
+                    : "Leave blank to use every number.")}
+              </p>
               <div className="example-name">
                 <span>FIRST FILENAME</span>
                 <p>
                   {validPrefix ? prefix.trim() : "Your prefix"}{" "}
                   <strong>
-                    {validStart ? numberLabel(startNumber) : "00000"}
+                    {validStart && !skipError && firstNumber !== null
+                      ? numberLabel(firstNumber)
+                      : "—"}
                   </strong>
                   <span className="extension">.pdf</span>
                 </p>
@@ -558,7 +621,7 @@ export default function Renamer() {
                     {done
                       ? "You can undo the last batch during this session."
                       : count
-                        ? `${numberLabel(startNumber)} → ${numberLabel(startNumber + count - 1)}`
+                        ? `${numberLabel(current!.firstNumber)} → ${numberLabel(current!.lastNumber)}${skip.numbers.length ? " · skipped numbers omitted" : ""}`
                         : "Select a folder to get started."}
                   </span>
                 </div>

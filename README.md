@@ -7,7 +7,8 @@ A Windows desktop application built with **Tauri 2.12** and **Next.js 16.3.6** (
 1. Choose a folder with the native folder picker.
 2. Keep or edit the filename prefix. The default is `2026 06 22 FRA EMITIDA`.
 3. Enter the starting number, such as `00140`.
-4. Review the original and proposed names, then click **Rename files**.
+4. Optionally enter **Skip numbers**, such as `141, 143-145`, for numbers you have already used manually. Both padded and unpadded numbers work; ranges are inclusive. Starting at `00140`, this example produces `00140`, `00142`, `00146`, and so on.
+5. Review the original and proposed names, then click **Rename files**.
 
 For example, the first two PDF files become:
 
@@ -16,7 +17,7 @@ For example, the first two PDF files become:
 2026 06 22 FRA EMITIDA 00141.pdf
 ```
 
-The starting number and prefix are remembered between runs. The number is not automatically advanced after a batch; explicitly set the number for your next batch. A five-digit sequence can start at `00000` and end at `99999`.
+The starting number, prefix, and skipped numbers are remembered between runs. The number is not automatically advanced after a batch; explicitly set the number for your next batch. A five-digit sequence can start at `00000` and end at `99999`. Skipped numbers reserve values in the new sequence; they do not exclude existing files from the selected folder. Keep manually completed files outside the folder being renamed.
 
 Files are ordered by their current filenames using natural, case-insensitive order (`invoice2` before `invoice10`), with a deterministic case-sensitive tie-breaker. All regular files directly inside the selected folder are included. Subfolders and symbolic links are skipped. Original extensions, including their case, are retained; files without an extension stay extensionless. For compound extensions, the final suffix is retained (`archive.tar.gz` becomes `…00140.gz`).
 

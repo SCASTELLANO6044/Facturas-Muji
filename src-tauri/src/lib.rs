@@ -24,13 +24,14 @@ async fn preview_rename(
     folder: String,
     prefix: String,
     start: u32,
+    skip_numbers: Vec<u32>,
     state: State<'_, Mutex<Session>>,
 ) -> Result<Preview, String> {
     let mut session = state
         .lock()
         .map_err(|_| "The app session is unavailable. Restart the app.")?;
     session.preview = None;
-    let plan = renamer::make_plan(&folder, &prefix, start)?;
+    let plan = renamer::make_plan(&folder, &prefix, start, &skip_numbers)?;
     let preview = plan.preview.clone();
     session.preview = Some(plan);
     Ok(preview)
